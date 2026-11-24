@@ -27,14 +27,17 @@
 	const behind = [$(".top"), $(".games-page"), $(".foot")].filter(Boolean);
 
 	const tabButtons = [...document.querySelectorAll("#games-tabs [data-tab]")];
-	let tab = "site"; // "site": hosted on this site, "mirror": from the jsdmirror CDN, "static": from staticdelivr, "gn": gn-math, "axe": Axe Guys games
+	let tab = "site"; // "site": hosted on this site, "mirror": from the jsDelivr CDN and other hosts, "gn": gn-math, "axe": Axe Guys games
 	let games = [];
 	let sections = [];
 	let current = null; // the game being played
 	let opener = null; // the tile to give focus back to
 	let frame = null;
 	let frameBlob = ""; // object URL of the current frame, when it was loaded that way
-	let mode = 0; // how the game is loaded: 0 inline, 1 from a blob, 2 straight from its address
+	let mode = 0; // how the game is loaded: 0 inline, 1 from a blob, 2 straight from its address, 3 through the Scramjet proxy
+	let proxyReady = null; // promise of the proxy controller, started the first time a game needs it
+	let proxyCtl = null; // the proxy controller once it works
+	let proxyBroken = false; // the proxy could not start (for example, no server behind this page)
 	let token = 0; // bumped on every launch and close, so stale loads are ignored
 	let cached = { url: "", html: "" }; // the current game's HTML, so Reload doesn't download it again
 
@@ -58,7 +61,7 @@
 		const image = typeof entry.image === "string" ? safeUrl(entry.image.trim()) : "";
 		// Links relative to this site are games hosted on this site; full http(s) links live on other hosts
 		const local = !/^[a-z][a-z0-9+.-]*:/i.test(entry.url.trim());
-		const src = entry.s === "static" || entry.s === "gn" || entry.s === "axe" ? entry.s : local ? "site" : "mirror";
+		const src = entry.s === "gn" || entry.s === "axe" ? entry.s : local ? "site" : "mirror";
 		return { name, url, image, local, src, mode: entry.mode === 1 || entry.mode === 2 ? entry.mode : 0 };
 	}
 
@@ -251,6 +254,56 @@
 		return base + html;
 	}
 
+	/* --------------------------------------------------------------- proxy */
+
+	// Games from other sites load through the Scramjet proxy that runs the search page, so the game's host talks to
+	// the proxy server and never to the visitor's own connection. This needs the site's server (the /scram/ and
+	// /baremux/ files and the wisp socket); without it the game falls back to loading directly.
+	function loadScript(src) {
+		return new Promise((resolve, reject) => {
+			const el = document.createElement("script");
+			el.src = src;
+			el.onload = resolve;
+			el.onerror = () => reject(new Error("Missing " + src));
+			document.head.appendChild(el);
+		});
+	}
+
+	function ensureProxy() {
+		if (proxyReady) return proxyReady;
+		proxyReady = (async () => {
+			if (typeof $scramjetLoadController === "undefined") await loadScript("/scram/scramjet.all.js");
+			if (typeof BareMux === "undefined") await loadScript("/baremux/index.js");
+			if (typeof registerSW === "undefined") await loadScript("register-sw.js");
+			const { ScramjetController } = $scramjetLoadController();
+			const controller = new ScramjetController({
+				files: {
+					wasm: "/scram/scramjet.wasm.wasm",
+					all: "/scram/scramjet.all.js",
+					sync: "/scram/scramjet.sync.js",
+				},
+			});
+			controller.init();
+			await registerSW();
+			const connection = new BareMux.BareMuxConnection("/baremux/worker.js");
+			const wisp = (location.protocol === "https:" ? "wss" : "ws") + "://" + location.host + "/wisp/";
+			if ((await connection.getTransport()) !== "/libcurl/index.mjs") {
+				await connection.setTransport("/libcurl/index.mjs", [{ websocket: wisp }]);
+			}
+			proxyCtl = controller;
+			return controller;
+		})();
+		proxyReady.catch(() => {
+			proxyReady = null;
+		});
+		return proxyReady;
+	}
+
+	// The ways a game can be loaded, in the order "Other way" cycles through them
+	function methods() {
+		return current && !current.local && !proxyBroken ? [3, 0, 1, 2] : [0, 1, 2];
+	}
+
 	function mountFrame(source) {
 		removeFrame();
 		const f = document.createElement("iframe");
@@ -271,9 +324,10 @@
 		else if (source.blob !== undefined) {
 			frameBlob = URL.createObjectURL(new Blob([source.blob], { type: "text/html" }));
 			f.src = frameBlob;
-		} else f.src = source.src;
+		} else if (source.src !== undefined) f.src = source.src;
 		stage.appendChild(f);
 		frame = f;
+		if (source.proxy !== undefined) source.controller.createFrame(f).go(source.proxy);
 	}
 
 	// (Re)starts the current game from scratch
@@ -284,7 +338,22 @@
 		removeFrame();
 		showLoading("Loading " + game.name + "…", false);
 
-		altBtn.title = "Loading method " + (mode + 1) + " of 3 - click to try another";
+		if (mode === 3) {
+			try {
+				const controller = await ensureProxy();
+				if (mine !== token) return;
+				altBtn.title = "Loaded through the proxy - click to try another way";
+				mountFrame({ proxy: game.url, controller });
+				return;
+			} catch (err) {
+				if (mine !== token) return;
+				proxyBroken = true;
+				mode = 0;
+				showLoading("The proxy isn't available here, loading " + game.name + " directly…", false);
+			}
+		}
+		const list = methods();
+		altBtn.title = "Loading method " + (list.indexOf(mode) + 1) + " of " + list.length + " - click to try another";
 		if (mode === 2) {
 			mountFrame({ src: game.url });
 			return;
@@ -316,7 +385,8 @@
 
 	// "Another way": cycles through the ways of loading a game, for games that show a black screen in the first
 	function tryAnotherWay() {
-		mode = (mode + 1) % 3;
+		const list = methods();
+		mode = list[(list.indexOf(mode) + 1) % list.length];
 		launch();
 	}
 
@@ -324,7 +394,13 @@
 	function openInTab() {
 		if (!current) return;
 		let target = current.url;
-		if (cached.url === current.url && cached.html) {
+		if (mode === 3 && proxyCtl) {
+			try {
+				target = proxyCtl.encodeUrl(current.url);
+			} catch (err) {
+				/* open it directly */
+			}
+		} else if (cached.url === current.url && cached.html) {
 			target = URL.createObjectURL(new Blob([withBase(cached.html, current.url)], { type: "text/html" }));
 			setTimeout(() => URL.revokeObjectURL(target), 120000);
 		}
@@ -333,7 +409,7 @@
 
 	function openGame(game, tile) {
 		current = game;
-		mode = game.mode || 0;
+		mode = game.mode || (game.local || proxyBroken ? 0 : 3);
 		opener = tile;
 		titleEl.textContent = game.name;
 		player.hidden = false;
