@@ -37,7 +37,7 @@
 	let mode = 0; // how the game is loaded: 0 inline, 1 from a blob, 2 straight from its address, 3 through the Scramjet proxy
 	let proxyReady = null; // promise of the proxy controller, started the first time a game needs it
 	let proxyCtl = null; // the proxy controller once it works
-	let proxyBroken = false; // the proxy could not start (for example, no server behind this page)
+	let proxyBroken = false; // the proxy could not start on this page (for example, no server behind it)
 	let token = 0; // bumped on every launch and close, so stale loads are ignored
 	let cached = { url: "", html: "" }; // the current game's HTML, so Reload doesn't download it again
 
@@ -299,9 +299,18 @@
 		return proxyReady;
 	}
 
+	// The Vodious server set up in Settings, for pages that have no proxy of their own (the single .svg file)
+	function remoteProxy(target) {
+		return window.VodiousProxy ? window.VodiousProxy.url(target) : "";
+	}
+
+	function canProxy(game) {
+		return !!game && !game.local && (!proxyBroken || !!remoteProxy(game.url));
+	}
+
 	// The ways a game can be loaded, in the order "Other way" cycles through them
 	function methods() {
-		return current && !current.local && !proxyBroken ? [3, 0, 1, 2] : [0, 1, 2];
+		return canProxy(current) ? [3, 0, 1, 2] : [0, 1, 2];
 	}
 
 	function mountFrame(source) {
@@ -340,6 +349,7 @@
 
 		if (mode === 3) {
 			try {
+				if (proxyBroken) throw new Error("no proxy on this page");
 				const controller = await ensureProxy();
 				if (mine !== token) return;
 				altBtn.title = "Loaded through the proxy - click to try another way";
@@ -348,8 +358,15 @@
 			} catch (err) {
 				if (mine !== token) return;
 				proxyBroken = true;
+				const remote = remoteProxy(game.url);
+				if (remote) {
+					// No proxy in this page: let the Vodious server set in Settings open the game
+					altBtn.title = "Loaded through your Vodious server - click to try another way";
+					mountFrame({ src: remote });
+					return;
+				}
 				mode = 0;
-				showLoading("The proxy isn't available here, loading " + game.name + " directly…", false);
+				showLoading("No proxy here (set your server in Settings). Loading " + game.name + " directly…", false);
 			}
 		}
 		const list = methods();
@@ -394,7 +411,9 @@
 	function openInTab() {
 		if (!current) return;
 		let target = current.url;
-		if (mode === 3 && proxyCtl) {
+		if (mode === 3 && !proxyCtl && remoteProxy(current.url)) {
+			target = remoteProxy(current.url);
+		} else if (mode === 3 && proxyCtl) {
 			try {
 				target = proxyCtl.encodeUrl(current.url);
 			} catch (err) {
@@ -409,7 +428,7 @@
 
 	function openGame(game, tile) {
 		current = game;
-		mode = game.mode || (game.local || proxyBroken ? 0 : 3);
+		mode = game.mode || (canProxy(game) ? 3 : 0);
 		opener = tile;
 		titleEl.textContent = game.name;
 		player.hidden = false;

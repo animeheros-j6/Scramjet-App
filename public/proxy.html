@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Vodious</title>
+		<link rel="icon" href="favicon.ico" />
+		<style>
+			html,
+			body {
+				margin: 0;
+				height: 100%;
+				background: #000;
+				color: #e9e4ff;
+				font-family: system-ui, sans-serif;
+			}
+			#sj-frame {
+				position: fixed;
+				inset: 0;
+				width: 100%;
+				height: 100%;
+				border: 0;
+			}
+			#msg {
+				padding: 2rem;
+			}
+			pre {
+				white-space: pre-wrap;
+				color: #c4b5fd;
+			}
+		</style>
+		<script src="/scram/scramjet.all.js"></script>
+		<script src="/baremux/index.js"></script>
+		<script src="register-sw.js" defer></script>
+		<script src="proxy-page.js" defer></script>
+	</head>
+	<body>
+		<div id="msg" hidden>
+			<p></p>
+			<pre></pre>
+		</div>
+	</body>
+</html>
