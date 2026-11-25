@@ -1,6 +1,6 @@
 "use strict";
 // The address of your Vodious server (the one that runs the proxy). Pages that have no server behind them, like the
-// single vodious.svg file, send games and searches through it: <server>/proxy.html?u=<address>
+// single vodious.svg file, send games and searches through it: <server>/go.html?u=<address>
 (() => {
 	const KEY = "vodious-proxy";
 
@@ -37,7 +37,7 @@
 	// The page on the server that opens an address through the proxy
 	function url(target) {
 		const host = get();
-		return host ? host + "/proxy.html?u=" + encodeURIComponent(target) : "";
+		return host ? host + "/go.html?u=" + encodeURIComponent(target) : "";
 	}
 
 	// Resolves if something answers at the address (it cannot tell what, only that the server is reachable)
